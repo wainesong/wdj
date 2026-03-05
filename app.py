@@ -4,22 +4,28 @@ from bs4 import BeautifulSoup
 import time
 import random
 
-st.set_page_config(page_title="Zuvio 智慧點名器", page_icon="💊")
-st.title("💊 Zuvio 智慧點名 (API 穩定版)")
+st.set_page_config(page_title="Zuvio 雲端助手", page_icon="💊")
+st.title("💊 Zuvio 智慧點名網頁版")
 
+# 側邊欄：使用者設定
 with st.sidebar:
-    st.header("🔑 登入資訊")
-    user_email = st.text_input("帳號", value="B1001228@gm.cnu.edu.tw")
+    st.header("🔑 帳號設定")
+    user_email = st.text_input("Email", value="B1001228@gm.cnu.edu.tw")
     user_password = st.text_input("密碼", type="password")
-    course_id = st.text_input("課程代號", value="1460562")
-    st.markdown("---")
+    
+    st.header("📍 課程與定位")
+    course_id = st.text_input("課程 ID (數字)", value="1460562")
     lat = st.number_input("緯度", value=22.921056, format="%.6f")
     lng = st.number_input("經度", value=120.228056, format="%.6f")
+    
+    interval = st.slider("檢查頻率 (秒)", 5, 30, 10)
 
-def run_app():
+def start_checkin():
     session = requests.Session()
+    # 模擬 iPhone 瀏覽器
     headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/04.1',
+        'Referer': 'https://irs.zuvio.com.tw/'
     }
 
     try:
@@ -32,12 +38,11 @@ def run_app():
             return
         
         st.success("✅ 登入成功！")
-
-        # 2. 智慧尋找正確的點名網址 (解決 404)
+        
+        # 2. 解決 404 問題：自動判斷網址版本
         urls = [
             f"https://irs.zuvio.com.tw/student5/irs/rollcall/{course_id}",
-            f"https://irs.zuvio.com.tw/student/irs/rollcall/{course_id}",
-            f"https://irs.zuvio.com.tw/student/irs/index/{course_id}"
+            f"https://irs.zuvio.com.tw/student/irs/rollcall/{course_id}"
         ]
         
         active_url = ""
@@ -48,25 +53,30 @@ def run_app():
                 break
         
         if not active_url:
-            st.error(f"❌ 找不到課程 {course_id}。請檢查號碼是否填錯。")
+            st.error(f"❌ 找不到課程代號 {course_id}，請確認數字是否填錯。")
             return
 
-        status_box = st.empty()
+        status_display = st.empty()
+        
+        # 3. 監控循環
         while True:
             res = session.get(active_url, headers=headers)
             soup = BeautifulSoup(res.text, "html.parser")
-            
-            # 偵測簽到狀態
             page_text = soup.text
+
             if "簽到開放中" in page_text:
-                status_box.warning("🎯 偵測到點名開放！")
+                # 偵測是否為 GPS 點名
+                is_gps = any(word in page_text for word in ["GPS", "定位", "距離"])
+                status_display.warning(f"🎯 偵測到點名開放！模式：{'GPS' if is_gps else '一般'}")
                 
-                # 發送簽到
+                # 發送簽到要求
                 submit_url = "https://irs.zuvio.com.tw/student5/irs/submitRollcall"
-                # 判斷是否需要 GPS (只要頁面有提到 GPS 就送座標)
-                is_gps = "GPS" in page_text or "定位" in page_text
+                payload = {
+                    'course_id': course_id,
+                    'type': 'rollcall',
+                    'device': 'ios'
+                }
                 
-                payload = {'course_id': course_id, 'type': 'rollcall', 'device': 'ios'}
                 if is_gps:
                     payload.update({
                         'lat': lat + random.uniform(-0.00002, 0.00002),
@@ -81,19 +91,19 @@ def run_app():
                     st.success("🎉 點名成功！")
                     break
                 else:
-                    st.error("❌ 簽到失敗，請檢查座標或手動簽到。")
+                    st.error("❌ 簽到失敗，伺服器拒絕請求。")
                     break
             
-            elif "準時" in page_text or "已完成" in page_text:
-                status_box.info("✅ 目前已在簽到狀態。")
+            elif "準時" in page_text:
+                status_display.info("✅ 目前顯示已簽到。")
                 break
             else:
-                status_box.write(f"⏳ 監控中... ({time.strftime('%H:%M:%S')})")
+                status_display.write(f"⏳ 監控中... ({time.strftime('%H:%M:%S')})")
             
-            time.sleep(10)
+            time.sleep(interval)
 
     except Exception as e:
-        st.error(f"發生錯誤：{e}")
+        st.error(f"發生程式錯誤：{e}")
 
-if st.button("🚀 開始全自動監控"):
-    run_app()
+if st.button("🚀 開始點名監控", type="primary"):
+    start_checkin()
