@@ -1,110 +1,95 @@
 import streamlit as st
-import requests
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 import time
 import random
 
-st.set_page_config(page_title="Zuvio 終極修正版", page_icon="🛡️")
-st.title("🛡️ Zuvio 簽到助手 (防禦性更新版)")
+st.title("🛡️ Zuvio 終極穩定版 (Selenium)")
 
+# 側邊欄設定
 with st.sidebar:
-    st.header("🔑 帳戶設定")
-    user_email = st.text_input("帳號", value="B1001228@gm.cnu.edu.tw")
-    user_password = st.text_input("密碼", type="password")
+    st.header("🔑 帳號設定")
+    user_id = st.text_input("帳號", value="B1001228@gm.cnu.edu.tw")
+    user_pw = st.text_input("密碼", type="password")
+    
+    st.header("📍 課程與定位")
     course_id = st.text_input("課程代號", value="1460562")
     lat = st.number_input("緯度", value=22.921056, format="%.6f")
     lng = st.number_input("經度", value=120.228056, format="%.6f")
-    interval = st.slider("檢查頻率 (秒)", 5, 30, 10)
 
-def start_monitoring():
-    session = requests.Session()
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-        'X-Requested-With': 'XMLHttpRequest'
-    }
+if st.button("開始模擬點名"):
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_experimental_option("prefs", {"profile.default_content_setting_values.geolocation": 1})
 
     try:
-        # 1. 登入
-        login_res = session.post("https://irs.zuvio.com.tw/irs/submitLogin", 
-                                 data={'email': user_email, 'password': user_password, 'current_role': 'student'})
-        
-        if "帳號或密碼錯誤" in login_res.text:
-            st.error("❌ 登入失敗：請檢查帳號密碼。")
-            return
-        
-        st.success("✅ 登入成功！")
-        status_info = st.empty()
+        with st.status("啟動模擬瀏覽器...", expanded=True) as status:
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            
+            # 1. 模擬 GPS (加入微小抖動防止被抓)
+            driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
+                "latitude": lat + random.uniform(-0.00001, 0.00001),
+                "longitude": lng + random.uniform(-0.00001, 0.00001),
+                "accuracy": 100
+            })
 
-        # 2. 自動尋找正確網址
-        urls_to_try = [
-            f"https://irs.zuvio.com.tw/student5/irs/rollcall/{course_id}",
-            f"https://irs.zuvio.com.tw/student/irs/rollcall/{course_id}"
-        ]
-        
-        final_url = ""
-        for u in urls_to_try:
-            if session.get(u).status_code == 200:
-                final_url = u
-                break
-        
-        if not final_url:
-            st.error("❌ 找不到點名頁面，請確認課程代號是否正確。")
-            return
+            # 2. 登入
+            driver.get("https://irs.zuvio.com.tw/")
+            time.sleep(2)
+            driver.find_element(By.ID, "email").send_keys(user_id)
+            driver.find_element(By.ID, "password").send_keys(user_pw)
+            driver.find_element(By.CLASS_NAME, "submit-button").click()
+            time.sleep(3)
 
-        while True:
-            res = session.get(final_url, headers=headers)
-            soup = BeautifulSoup(res.text, "html.parser")
-            rollcall_box = soup.find("div", class_="irs-rollcall")
-            text_content = rollcall_box.text if rollcall_box else ""
+            # 3. 嘗試多個網址 (解決 404)
+            urls_to_try = [
+                f"https://irs.zuvio.com.tw/student5/irs/rollcall/{course_id}",
+                f"https://irs.zuvio.com.tw/student/irs/rollcall/{course_id}"
+            ]
+            
+            worked_url = ""
+            for test_url in urls_to_try:
+                driver.get(test_url)
+                time.sleep(2)
+                if "Zuvio 404" not in driver.title:
+                    worked_url = test_url
+                    break
+            
+            if not worked_url:
+                st.error(f"❌ 課程代號 {course_id} 確定是錯的！請在 Zuvio 網頁點進課程，看網址最後的數字。")
+                driver.quit()
+                st.stop()
 
-            if "簽到開放中" in text_content:
-                # 判斷是否需要 GPS
-                is_gps = any(k in text_content for k in ["GPS", "定位", "距離"])
-                status_info.warning(f"🎯 偵測到{'GPS' if is_gps else '一般'}簽到開放！")
+            st.success(f"✅ 連線成功！正在監控：{course_id}")
+            
+            # 4. 監控循環
+            while True:
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                text = soup.text
                 
-                submit_url = final_url.replace("rollcall", "submitRollcall")
-                submit_data = {'course_id': course_id, 'type': 'rollcall', 'device': 'ios'}
-                
-                if is_gps:
-                    submit_data.update({
-                        'lat': lat + random.uniform(-0.00001, 0.00001),
-                        'lng': lng + random.uniform(-0.00001, 0.00001),
-                        'accuracy': random.uniform(15, 25)
-                    })
-
-                # 執行簽到
-                response = session.post(submit_url, data=submit_data, headers=headers)
-                
-                # --- 強化判斷邏輯 ---
-                # 優先檢查 JSON
-                try:
-                    res_json = response.json()
-                    if res_json.get("status") == "yes":
-                        st.balloons(); st.success("🎉 簽到成功！")
+                if "簽到開放中" in text:
+                    # 判斷是否需要點擊
+                    btn = driver.find_elements(By.ID, "submit-make-rollcall")
+                    if btn:
+                        driver.execute_script("arguments[0].click();", btn[0])
+                        st.balloons()
+                        st.success("🎉 點名成功！")
                         break
-                except:
-                    pass # 非 JSON 格式則往下檢查文本
                 
-                # 檢查 HTML 文本關鍵字
-                if any(word in response.text for word in ["成功", "已經簽到", "ok", "yes"]):
-                    st.balloons(); st.success("🎉 簽到成功 (透過文本驗證)！")
+                elif "準時" in text or "已簽到" in text:
+                    st.info("✅ 偵測到已完成簽到。")
                     break
-                else:
-                    st.error("❌ 簽到可能失敗，請展開下方日誌檢查內容。")
-                    with st.expander("查看伺服器回傳內容 (Debug)"):
-                        st.code(response.text)
-                    break
-            
-            elif any(word in text_content for word in ["準時", "已簽到"]):
-                status_info.info("✅ 偵測到已完成簽到。")
-                break
-            else:
-                status_info.write(f"⏳ 監控中... ({time.strftime('%H:%M:%S')})")
-            
-            time.sleep(interval)
-
+                
+                status.update(label=f"⏳ 監控中...最後更新：{time.strftime('%H:%M:%S')}")
+                time.sleep(15)
+                driver.refresh()
+                
+            driver.quit()
     except Exception as e:
         st.error(f"發生錯誤：{e}")
-
-if st.button("🚀 開始全自動監控"):
-    start_monitoring()
